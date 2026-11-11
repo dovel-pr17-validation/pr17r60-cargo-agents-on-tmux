@@ -1,0 +1,21 @@
+[package]
+name = "agents-on-tmux"
+version = "1.0.0"
+edition = "2024"
+
+[[bin]]
+name = "aot"
+path = "src/main.rs"
+
+[dependencies]
+thiserror = "2.0"
+ratatui = "0.30"
+crossterm = "0.29"
+clap = { version = "4", features = ["derive", "env"] }
+anyhow = "1.0"
+serde = { version = "1", features = ["derive"] }
+toml = "1.1"
+dirs = "7"
+unicode-width = "0.2"
+signal-hook = "0.4"
+sysinfo = "0.39"

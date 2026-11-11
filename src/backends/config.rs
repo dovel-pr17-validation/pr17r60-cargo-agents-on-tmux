@@ -1,0 +1,268 @@
+/// Default width in columns of the TUI side panel.
+const DEFAULT_TUI_WIDTH: u16 = 35;
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum LaunchMode {
+    TuiOnly { width: Option<u16> },
+    Split { width: u16 },
+    NoTui,
+}
+
+/// Application configuration options
+#[derive(serde::Deserialize, Clone, Default)]
+pub struct Config {
+    #[serde(default)]
+    pub tui: Option<bool>,
+    #[serde(default)]
+    pub no_tui: Option<bool>,
+    #[serde(default)]
+    pub tui_width: Option<u16>,
+    #[serde(default)]
+    pub nerd_font: Option<bool>,
+    #[serde(default)]
+    pub font_awesome: Option<bool>,
+    #[serde(default)]
+    pub debug: Option<bool>,
+    #[serde(default)]
+    pub tmux_env: Option<String>,
+    #[serde(default)]
+    pub tui_pane: Option<String>,
+}
+
+/// Possible errors when reading config file
+#[derive(thiserror::Error, Debug)]
+pub enum ConfigError {
+    #[error("could not determine config directory")]
+    ConfigDirNotFound,
+    #[error("failed to read config file: {0}")]
+    ReadError(#[from] std::io::Error),
+    #[error("failed to parse config file: {0}")]
+    ParseError(#[from] toml::de::Error),
+}
+
+impl Config {
+    /// Parse a config file to a Config
+    pub fn parse() -> Result<Self, ConfigError> {
+        let path = dirs::config_dir()
+            .ok_or(ConfigError::ConfigDirNotFound)?
+            .join("aot")
+            .join("aot.conf");
+
+        if !path.exists() {
+            return Ok(Self::default());
+        }
+
+        let content = std::fs::read_to_string(&path)?;
+        Ok(toml::from_str(&content)?)
+    }
+
+    /// Merge two Config, the other takes precedence
+    pub fn merge<C: Into<Self>>(self, other: C) -> Self {
+        let other = other.into();
+        Self {
+            tui: other.tui.or(self.tui),
+            no_tui: other.no_tui.or(self.no_tui),
+            tui_width: other.tui_width.or(self.tui_width),
+            nerd_font: other.nerd_font.or(self.nerd_font),
+            font_awesome: other.font_awesome.or(self.font_awesome),
+            debug: other.debug.or(self.debug),
+            tmux_env: other.tmux_env.or(self.tmux_env),
+            tui_pane: other.tui_pane.or(self.tui_pane),
+        }
+    }
+
+    pub fn launch_mode(&self) -> LaunchMode {
+        if self.tui.unwrap_or(false) {
+            if let Some(width) = self.tui_width {
+                LaunchMode::TuiOnly { width: Some(width) }
+            } else {
+                LaunchMode::TuiOnly { width: None }
+            }
+        } else if self.no_tui.unwrap_or(false) {
+            LaunchMode::NoTui
+        } else {
+            LaunchMode::Split {
+                width: self.tui_width.unwrap_or(DEFAULT_TUI_WIDTH),
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_default_all_none() {
+        let config = Config::default();
+        assert_eq!(config.tui, None);
+        assert_eq!(config.no_tui, None);
+        assert_eq!(config.nerd_font, None);
+        assert_eq!(config.font_awesome, None);
+        assert_eq!(config.debug, None);
+        assert_eq!(config.tui_width, None);
+    }
+
+    #[test]
+    fn test_merge_other_overrides_self() {
+        let base = Config {
+            tui: Some(false),
+            nerd_font: Some(false),
+            no_tui: None,
+            font_awesome: None,
+            debug: Some(false),
+            tui_width: Some(20),
+            tmux_env: None,
+            tui_pane: None,
+        };
+        let other = Config {
+            tui: Some(true),
+            nerd_font: None,
+            no_tui: None,
+            font_awesome: None,
+            debug: Some(true),
+            tui_width: Some(50),
+            tmux_env: None,
+            tui_pane: None,
+        };
+        let merged = base.merge(other);
+        assert_eq!(merged.tui, Some(true));
+        assert_eq!(merged.nerd_font, Some(false));
+        assert_eq!(merged.no_tui, None);
+        assert_eq!(merged.font_awesome, None);
+        assert_eq!(merged.debug, Some(true));
+        assert_eq!(merged.tui_width, Some(50));
+    }
+
+    #[test]
+    fn test_merge_falls_back_to_self() {
+        let base = Config {
+            tui: None,
+            no_tui: None,
+            nerd_font: Some(true),
+            font_awesome: Some(true),
+            debug: Some(true),
+            tui_width: Some(50),
+            tmux_env: None,
+            tui_pane: None,
+        };
+        let other = Config::default();
+        let merged = base.merge(other);
+        assert_eq!(merged.nerd_font, Some(true));
+        assert_eq!(merged.font_awesome, Some(true));
+        assert_eq!(merged.debug, Some(true));
+        assert_eq!(merged.tui_width, Some(50));
+    }
+
+    #[test]
+    fn test_merge_both_none_stays_none() {
+        let merged = Config::default().merge(Config::default());
+        assert_eq!(merged.tui, None);
+        assert_eq!(merged.no_tui, None);
+        assert_eq!(merged.nerd_font, None);
+        assert_eq!(merged.font_awesome, None);
+        assert_eq!(merged.debug, None);
+        assert_eq!(merged.tui_width, None);
+    }
+
+    #[test]
+    fn test_parse_valid_toml() {
+        let dir = std::env::temp_dir().join("aot_test_config");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("aot.conf");
+        std::fs::write(
+            &path,
+            "tui = true\nnerd_font = true\ndebug = true\ntui_width = 50\n",
+        )
+        .unwrap();
+
+        let content = std::fs::read_to_string(&path).unwrap();
+        let config: Config = toml::from_str(&content).unwrap();
+        assert_eq!(config.tui, Some(true));
+        assert_eq!(config.nerd_font, Some(true));
+        assert_eq!(config.no_tui, None);
+        assert_eq!(config.font_awesome, None);
+        assert_eq!(config.debug, Some(true));
+        assert_eq!(config.tui_width, Some(50));
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn test_parse_empty_toml_returns_defaults() {
+        let config: Config = toml::from_str("").unwrap();
+        assert_eq!(config.tui, None);
+        assert_eq!(config.no_tui, None);
+        assert_eq!(config.nerd_font, None);
+        assert_eq!(config.font_awesome, None);
+        assert_eq!(config.debug, None);
+        assert_eq!(config.tui_width, None);
+    }
+
+    #[test]
+    fn test_parse_malformed_toml_returns_error() {
+        let result: Result<Config, _> = toml::from_str("not valid {{{ toml");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_launch_mode_default_is_split() {
+        let config = Config::default();
+        assert_eq!(
+            config.launch_mode(),
+            LaunchMode::Split {
+                width: DEFAULT_TUI_WIDTH
+            }
+        );
+    }
+
+    #[test]
+    fn test_launch_mode_split_with_custom_width() {
+        let config = Config {
+            tui_width: Some(50),
+            ..Default::default()
+        };
+        assert_eq!(config.launch_mode(), LaunchMode::Split { width: 50 });
+    }
+
+    #[test]
+    fn test_launch_mode_tui_only_without_width() {
+        let config = Config {
+            tui: Some(true),
+            ..Default::default()
+        };
+        assert_eq!(config.launch_mode(), LaunchMode::TuiOnly { width: None });
+    }
+
+    #[test]
+    fn test_launch_mode_tui_only_with_width() {
+        let config = Config {
+            tui: Some(true),
+            tui_width: Some(42),
+            ..Default::default()
+        };
+        assert_eq!(
+            config.launch_mode(),
+            LaunchMode::TuiOnly { width: Some(42) }
+        );
+    }
+
+    #[test]
+    fn test_launch_mode_no_tui() {
+        let config = Config {
+            no_tui: Some(true),
+            ..Default::default()
+        };
+        assert_eq!(config.launch_mode(), LaunchMode::NoTui);
+    }
+
+    #[test]
+    fn test_launch_mode_tui_takes_precedence_over_no_tui() {
+        let config = Config {
+            tui: Some(true),
+            no_tui: Some(true),
+            ..Default::default()
+        };
+        assert_eq!(config.launch_mode(), LaunchMode::TuiOnly { width: None });
+    }
+}
